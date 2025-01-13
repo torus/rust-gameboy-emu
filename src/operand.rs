@@ -117,3 +117,135 @@ impl IO16<Imm16> for Cpu {
         unreachable!()
     }
 }
+
+impl IO8<Indirect> for Cpu {
+    fn read8(&mut self, bus: &Peripherals, src: Indirect) -> Option<u8> {
+        step!(None, {
+            0: {
+                VAL8.store(match src {
+                    Indirect::BC => bus.read(self.regs.bc()),
+                    Indirect::DE => bus.read(self.regs.de()),
+                    Indirect::HL => bus.read(self.regs.hl()),
+                    Indirect::CFF => bus.read(0xFF00 | (self.regs.c as u16)),
+                    Indirect::HLD => {
+                        let addr = self.regs.hl();
+                        self.regs.write_hl(addr.wrapping_sub(1));
+                        bus.read(addr)
+                    },
+                    Indirect::HLI => {
+                        let addr = self.regs.hl();
+                        self.regs.write_hl(addr.wrapping_add(1));
+                        bus.read(addr)
+                    },
+                }, Relaxed);
+                go!(1);
+                return None;
+            },
+            1: {
+                go!(0);
+                return Some(VAL8.load(Relaxed));
+            },
+        });
+    }
+    fn write8(&mut sefl, bus: &mut Peripherals, dst: Indirect, val: u8) -> Option<()> {
+        step!(None, {
+            0: {
+                match dst {
+                    Indirect::BC => bus.write(0xFF00 | (self.regs.c as u16), val),
+                    Indirect::HLD => {
+                        let addr = self.regs.hl();
+                        self.regs.write_hl(addr.wrapping_sub(1));
+                        bus.write(addr, val);
+                    },
+                    Indirect::HLI => {
+                        let addr = self.regs.hl();
+                        self.regs.write_hl(addr.wrapping_add(1));
+                        bus.write(addr, val);
+                    },
+                }
+                go!(1);
+                return None;
+            },
+            1: return Some(go!(0)),
+        });
+    }
+}
+
+impl IO8<Direct8> for Cpu {
+    fn read8(&mut self, bus: &Peripherals, src: Direct8) -> Option<u8> {
+        step!(None, {
+            0: if let Some(lo) = self.read8(bus, Imm8) {
+                VAL8.store(lo, Relaxed);
+                go!(1);
+                if let Direct8::DFF = src {
+                    VAL16.store(0xFF00 | (lo as u16), Relaxed);
+                    go!(2);
+                }
+            },
+            1: if let Some(hi) = self.read8(bus, Imm8) {
+                VAL16.store(u16::from_le_bytes([VAL8.load(Relaxed), hi]), Relaxed);
+                go!(2);
+            },
+            2: {
+                VAL8.store(bus.read(VAL16.load(Relaxed)), Relaxed);
+                go!(3);
+                return None;
+            },
+            3: {
+                go!(0);
+                return Some(VAL8.load(Relaxed));
+            },
+        });
+    }
+    fn write8(&mut self, bus: &mut Peripherals, dst: Direct8, val: u8) -> Option<()> {
+        step!(None, {
+            0: if let Some(lo) = self.read8(bus, Imm8) {
+                VAL8.store(lo, Relaxed);
+                go!(1);
+                if let Direct8::DFF = dst {
+                    VAL16.store(0xFF00 | (lo as u16), Relaxed);
+                    go!(2);
+                }
+            },
+            1: if let Some(hi) = self.read8(bus, Imm8) {
+                VAL16.store(u16::from_le_bytes([VAL8.load(Relaxed), hi]), Relaxed);
+                go!(2);
+            },
+            2: {
+                bus.write(VAL16.load(Relaxed), val);
+                go!(3);
+                return None;
+            },
+            3: return Some(go!(0)),
+        });
+    }
+}
+
+impl IO16<Direct16> for Cpu {
+    fn read16(&mut self, _: &Peripherals, _: Direct16) -> Option<u16> {
+        unreachable!()
+    }
+    fn write16(&mut self, bus: &mut Peripherals, _: Direct16, val: u16) -> Option<()> {
+        step!(None, {
+            0: if let Some(lo) = self.read8(bus, Imm8) {
+                VAL8.store(lo, Relaxed);
+                go!(1);
+            },
+            1: if let Some(hi) = self.read8(bus, Imm8) {
+                VAL16.store(u16::from_le_bytes([VAL8.load(Relaxed), hi]), Relaxed);
+                go!(2);
+            },
+            2: {
+                bus.write(VAL16.load(Relaxed), val as u8);
+                go!(3);
+                return None;
+            },
+            3: {
+                bus.write(VAL16.load(Relaxed).wrapping_add(1), (val >> 8) as u8);
+                go!(4);
+                return None;
+            },
+            4: return Some(go!(0)),
+        });
+    }
+}
